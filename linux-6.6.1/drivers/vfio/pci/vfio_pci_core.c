@@ -2191,12 +2191,13 @@ int vfio_pci_core_register_device(struct vfio_pci_core_device *vdev)
 	int ret;
 
 	/* Drivers must set the vfio_pci_core_device to their drvdata */
+	//确保当前传入的 vdev 和 PCI 设备私有数据中保存的指针相同
 	if (WARN_ON(vdev != dev_get_drvdata(dev)))
 		return -EINVAL;
-
+	//只支持普通 PCI 设备
 	if (pdev->hdr_type != PCI_HEADER_TYPE_NORMAL)
 		return -EINVAL;
-
+	//热迁移相关
 	if (vdev->vdev.mig_ops) {
 		if (!(vdev->vdev.mig_ops->migration_get_state &&
 		      vdev->vdev.mig_ops->migration_set_state &&
@@ -2204,7 +2205,7 @@ int vfio_pci_core_register_device(struct vfio_pci_core_device *vdev)
 		    !(vdev->vdev.migration_flags & VFIO_MIGRATION_STOP_COPY))
 			return -EINVAL;
 	}
-
+	//脏页日志
 	if (vdev->vdev.log_ops && !(vdev->vdev.log_ops->log_start &&
 	    vdev->vdev.log_ops->log_stop &&
 	    vdev->vdev.log_ops->log_read_and_clear))
@@ -2218,14 +2219,15 @@ int vfio_pci_core_register_device(struct vfio_pci_core_device *vdev)
 	 * which is prone to blocking if that VF is also in use by vfio-pci.
 	 * Just reject these PFs and let the user sort it out.
 	 */
+	 //如果这个pf有vf 那不能把这个pf给用户
 	if (pci_num_vf(pdev)) {
 		pci_warn(pdev, "Cannot bind to PF with SR-IOV enabled\n");
 		return -EBUSY;
 	}
-
+	//根据硬件能力选择最合适的复位域
 	if (pci_is_root_bus(pdev->bus)) {
 		ret = vfio_assign_device_set(&vdev->vdev, vdev);
-	} else if (!pci_probe_reset_slot(pdev->slot)) {
+	} else if (!pci_probe_reset_slot(pdev->slot)) {//通常应该是这个吧
 		ret = vfio_assign_device_set(&vdev->vdev, pdev->slot);
 	} else {
 		/*
@@ -2237,13 +2239,15 @@ int vfio_pci_core_register_device(struct vfio_pci_core_device *vdev)
 
 	if (ret)
 		return ret;
+	//给pf和vf建立关系
 	ret = vfio_pci_vf_init(vdev);
 	if (ret)
 		return ret;
+	//显卡相关
 	ret = vfio_pci_vga_init(vdev);
 	if (ret)
 		goto out_vf;
-
+	//读取设备的当前 PCI 电源状态保存到 vdev->current_state
 	vfio_pci_probe_power_state(vdev);
 
 	/*
@@ -2255,13 +2259,14 @@ int vfio_pci_core_register_device(struct vfio_pci_core_device *vdev)
 	 * be able to get to D3.  Therefore first do a D0 transition
 	 * before enabling runtime PM.
 	 */
+	//强制转换到 D0
 	vfio_pci_set_power_state(vdev, PCI_D0);
 
 	dev->driver->pm = &vfio_pci_core_pm_ops;
 	pm_runtime_allow(dev);
 	if (!disable_idle_d3)
 		pm_runtime_put(dev);
-
+	//注册到 VFIO 框架， 核心
 	ret = vfio_register_group_dev(&vdev->vdev);
 	if (ret)
 		goto out_power;

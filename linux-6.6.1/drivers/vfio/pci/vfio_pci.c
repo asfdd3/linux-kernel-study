@@ -148,15 +148,15 @@ static int vfio_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 {
 	struct vfio_pci_core_device *vdev;
 	int ret;
-
+	//检查设备是否在黑名单中
 	if (vfio_pci_is_denylisted(pdev))
 		return -EINVAL;
-
+	//分配 VFIO 核心设备对象 里面初始化vfio_device ！ 调用 vfio_pci_ops的init
 	vdev = vfio_alloc_device(vfio_pci_core_device, vdev, &pdev->dev,
 				 &vfio_pci_ops);
 	if (IS_ERR(vdev))
 		return PTR_ERR(vdev);
-
+	//关联私有数据
 	dev_set_drvdata(&pdev->dev, vdev);
 	ret = vfio_pci_core_register_device(vdev);
 	if (ret)
@@ -256,6 +256,7 @@ static int __init vfio_pci_init(void)
 	vfio_pci_core_set_params(nointxmask, is_disable_vga, disable_idle_d3);
 
 	/* Register and scan for devices */
+	//将 VFIO PCI 驱动注册到 PCI 子系统
 	ret = pci_register_driver(&vfio_pci_driver);
 	if (ret)
 		return ret;

@@ -281,13 +281,14 @@ static int __vfio_register_dev(struct vfio_device *device,
 	 * If the driver doesn't specify a set then the device is added to a
 	 * singleton set just for itself.
 	 */
+	//把设备放到一个set中
 	if (!device->dev_set)
 		vfio_assign_device_set(device, device);
-
+	//给struct device 起个名字
 	ret = dev_set_name(&device->device, "vfio%d", device->index);
 	if (ret)
 		return ret;
-
+	//尝试找group，如果没有就创建一个
 	ret = vfio_device_set_group(device, type);
 	if (ret)
 		return ret;
@@ -297,19 +298,22 @@ static int __vfio_register_dev(struct vfio_device *device,
 	 * restore cache coherency. It has to be checked here because it is only
 	 * valid for cases where we are using iommu groups.
 	 */
+	 //检查设备是否支持 DMA cache coherency
 	if (type == VFIO_IOMMU && !vfio_device_is_noiommu(device) &&
 	    !device_iommu_capable(device->dev, IOMMU_CAP_CACHE_COHERENCY)) {
 		ret = -EINVAL;
 		goto err_out;
 	}
-
+	//注册vfio_device
+	//注意这里不是注册的group设备，就是注册vfio_device中自己包的一个device
 	ret = vfio_device_add(device);
 	if (ret)
 		goto err_out;
 
 	/* Refcounting can't start until the driver calls register */
 	refcount_set(&device->refcount, 1);
-
+	//把当前 vfio_device 加入到 group 的设备链表里
+	//后续用户VFIO_GROUP_GET_DEVICE_FD找设备就是在这个链表中找
 	vfio_device_group_register(device);
 
 	return 0;

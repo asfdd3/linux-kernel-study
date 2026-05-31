@@ -632,29 +632,31 @@ static long vfio_pin_pages_remote(struct vfio_dma *dma, unsigned long vaddr,
 	/* This code path is only user initiated */
 	if (!mm)
 		return -ENODEV;
-
+	//第一次外层循环进来这里应该是0
+	//否则拿到物理页的编号
 	if (batch->size) {
 		/* Leftover pages in batch from an earlier call. */
 		*pfn_base = page_to_pfn(batch->pages[batch->offset]);
 		pfn = *pfn_base;
 		rsvd = is_invalid_reserved_pfn(*pfn_base);
-	} else {
+	} else {//先初始化为0
 		*pfn_base = 0;
 	}
-
+	//一共需要处理的页数
 	while (npage) {
-		if (!batch->size) {
+		if (!batch->size) {//第一次进这里，注意第二次就不进这里了
 			/* Empty batch, so refill it. */
 			long req_pages = min_t(long, npage, batch->capacity);
-
+			//这里是真正的锁住了页面，注意应该是锁住了多个页，返回的是锁住的页数
 			ret = vaddr_get_pfns(mm, vaddr, req_pages, dma->prot,
 					     &pfn, batch->pages);
 			if (ret < 0)
 				goto unpin_out;
-
+			//记录锁住的
 			batch->size = ret;
+			//初始化为0
 			batch->offset = 0;
-
+			//记录起始编号
 			if (!*pfn_base) {
 				*pfn_base = pfn;
 				rsvd = is_invalid_reserved_pfn(*pfn_base);
@@ -670,8 +672,8 @@ static long vfio_pin_pages_remote(struct vfio_dma *dma, unsigned long vaddr,
 		 * !VM_PFNMAP vma.
 		 */
 		while (true) {
-			if (pfn != *pfn_base + pinned ||
-			    rsvd != is_invalid_reserved_pfn(pfn))
+			if (pfn != *pfn_base + pinned || //// 物理页不连续
+			    rsvd != is_invalid_reserved_pfn(pfn)) //不是普通用户匿名页，而是特殊物理地址映射，比如某些设备 MMIO，注意额这里保留页也会被映射
 				goto out;
 
 			/*
@@ -679,9 +681,9 @@ static long vfio_pin_pages_remote(struct vfio_dma *dma, unsigned long vaddr,
 			 * externally pinned pages are already counted against
 			 * the user.
 			 */
-			if (!rsvd && !vfio_find_vpfn(dma, iova)) {
+			if (!rsvd && !vfio_find_vpfn(dma, iova)) {//是否为保留页 比如mmio? 是否已被pin过
 				if (!dma->lock_cap &&
-				    mm->locked_vm + lock_acct + 1 > limit) {
+				    mm->locked_vm + lock_acct + 1 > limit) {//当前已锁页数 + 本次已累积页数 + 当前这一页 > 限制
 					pr_warn("%s: RLIMIT_MEMLOCK (%ld) exceeded\n",
 						__func__, limit << PAGE_SHIFT);
 					ret = -ENOMEM;
@@ -689,8 +691,9 @@ static long vfio_pin_pages_remote(struct vfio_dma *dma, unsigned long vaddr,
 				}
 				lock_acct++;
 			}
-
+			//这里更新锁住的页数
 			pinned++;
+			//减少总共需要映射的页数
 			npage--;
 			vaddr += PAGE_SIZE;
 			iova += PAGE_SIZE;
@@ -699,7 +702,7 @@ static long vfio_pin_pages_remote(struct vfio_dma *dma, unsigned long vaddr,
 
 			if (!batch->size)
 				break;
-
+			//下一个页
 			pfn = page_to_pfn(batch->pages[batch->offset]);
 		}
 
@@ -716,7 +719,7 @@ unpin_out:
 		put_pfn(pfn, dma->prot);
 		batch->size = 0;
 	}
-
+	//出错回滚的逻辑，这保留页不被释放
 	if (ret < 0) {
 		if (pinned && !rsvd) {
 			for (pfn = *pfn_base ; pinned ; pfn++, pinned--)
@@ -1471,13 +1474,16 @@ static int vfio_pin_map_dma(struct vfio_iommu *iommu, struct vfio_dma *dma,
 	struct vfio_batch batch;
 	size_t size = map_size;
 	long npage;
+	//计算最多可以pin住多少个页
 	unsigned long pfn, limit = rlimit(RLIMIT_MEMLOCK) >> PAGE_SHIFT;
 	int ret = 0;
-
+	//初始化batch 用于批量 pin面
 	vfio_batch_init(&batch);
 
 	while (size) {
 		/* Pin a contiguous chunk of memory */
+		//pin住连续的页， 返回是pin了多少个页 ，第一次的dma——size是0 。npage表示要pin住的页数
+		//pfn是第一个固定页的物理页帧号
 		npage = vfio_pin_pages_remote(dma, vaddr + dma->size,
 					      size >> PAGE_SHIFT, &pfn, limit,
 					      &batch);
@@ -1488,6 +1494,7 @@ static int vfio_pin_map_dma(struct vfio_iommu *iommu, struct vfio_dma *dma,
 		}
 
 		/* Map it! */
+		//调用iommu的接口完成真正的映射
 		ret = vfio_iommu_map(iommu, iova + dma->size, pfn, npage,
 				     dma->prot);
 		if (ret) {
@@ -1496,7 +1503,7 @@ static int vfio_pin_map_dma(struct vfio_iommu *iommu, struct vfio_dma *dma,
 			vfio_batch_unpin(&batch, dma);
 			break;
 		}
-
+		//更新size 和 已经映射的size
 		size -= npage << PAGE_SHIFT;
 		dma->size += npage << PAGE_SHIFT;
 	}
@@ -1575,10 +1582,12 @@ static int vfio_dma_do_map(struct vfio_iommu *iommu,
 	struct vfio_dma *dma;
 
 	/* Verify that none of our __u64 fields overflow */
+	//溢出检查
 	if (map->size != size || map->vaddr != vaddr || map->iova != iova)
 		return -EINVAL;
 
 	/* READ/WRITE from device perspective */
+	//设置 IOMMU 访问权限
 	if (map->flags & VFIO_DMA_MAP_FLAG_WRITE)
 		prot |= IOMMU_WRITE;
 	if (map->flags & VFIO_DMA_MAP_FLAG_READ)
@@ -1592,7 +1601,7 @@ static int vfio_dma_do_map(struct vfio_iommu *iommu,
 	pgsize = (size_t)1 << __ffs(iommu->pgsize_bitmap);
 
 	WARN_ON((pgsize - 1) & PAGE_MASK);
-
+	//对齐与溢出检查 大小不能为 0，地址和大小必须是 pgsize 的整数倍
 	if (!size || (size | iova | vaddr) & (pgsize - 1)) {
 		ret = -EINVAL;
 		goto out_unlock;
@@ -1603,8 +1612,9 @@ static int vfio_dma_do_map(struct vfio_iommu *iommu,
 		ret = -EINVAL;
 		goto out_unlock;
 	}
-
+	//查找已存在的 DMA 区域 其实就是遍历红黑树，通过应该找到不到
 	dma = vfio_find_dma(iommu, iova, size);
+	//热迁移的场景
 	if (set_vaddr) {
 		if (!dma) {
 			ret = -ENOENT;
@@ -1620,27 +1630,28 @@ static int vfio_dma_do_map(struct vfio_iommu *iommu,
 			iommu->vaddr_invalid_count--;
 		}
 		goto out_unlock;
+	//不是热迁移还找到了，那表示已经存在了
 	} else if (dma) {
 		ret = -EEXIST;
 		goto out_unlock;
 	}
-
+	//可以映射多少次，是否达到了上限
 	if (!iommu->dma_avail) {
 		ret = -ENOSPC;
 		goto out_unlock;
 	}
-
+	//是否落在IOVA的区间内
 	if (!vfio_iommu_iova_dma_valid(iommu, iova, iova + size - 1)) {
 		ret = -EINVAL;
 		goto out_unlock;
 	}
-
+	//申请一个记录这次映射的结构
 	dma = kzalloc(sizeof(*dma), GFP_KERNEL);
 	if (!dma) {
 		ret = -ENOMEM;
 		goto out_unlock;
 	}
-
+	//初始化字段，iova vaddr 这里减去了映射的次数
 	iommu->dma_avail--;
 	dma->iova = iova;
 	dma->vaddr = vaddr;
@@ -1658,10 +1669,10 @@ static int vfio_dma_do_map(struct vfio_iommu *iommu,
 	get_task_struct(current->group_leader);
 	dma->task = current->group_leader;
 	dma->lock_cap = capable(CAP_IPC_LOCK);
-	dma->mm = current->mm;
+	dma->mm = current->mm; //进程的mm
 	mmgrab(dma->mm);
 
-	dma->pfn_list = RB_ROOT;
+	dma->pfn_list = RB_ROOT; //初始化红黑树根节点
 
 	/* Insert zero-sized and grow as we map chunks of it */
 	vfio_link_dma(iommu, dma);
@@ -1669,7 +1680,7 @@ static int vfio_dma_do_map(struct vfio_iommu *iommu,
 	/* Don't pin and map if container doesn't contain IOMMU capable domain*/
 	if (list_empty(&iommu->domain_list))
 		dma->size = size;
-	else
+	else//正常走这里
 		ret = vfio_pin_map_dma(iommu, dma, size);
 
 	if (!ret && iommu->dirty_page_tracking) {
@@ -2796,10 +2807,10 @@ static int vfio_iommu_type1_get_info(struct vfio_iommu *iommu,
 	int ret;
 
 	minsz = offsetofend(struct vfio_iommu_type1_info, iova_pgsizes);
-
+	//拷贝用户信息
 	if (copy_from_user(&info, (void __user *)arg, minsz))
 		return -EFAULT;
-
+	//安全检查
 	if (info.argsz < minsz)
 		return -EINVAL;
 
@@ -2807,14 +2818,14 @@ static int vfio_iommu_type1_get_info(struct vfio_iommu *iommu,
 
 	mutex_lock(&iommu->lock);
 	info.flags = VFIO_IOMMU_INFO_PGSIZES;
-
-	info.iova_pgsizes = iommu->pgsize_bitmap;
-
+	//返回 IOMMU 支持的页大小
+	info.iova_pgsizes = iommu->pgsize_bitmap;//open 时候设置的
+	//热迁移能力
 	ret = vfio_iommu_migration_build_caps(iommu, &caps);
-
+	//DMA 映射条目剩余额度
 	if (!ret)
 		ret = vfio_iommu_dma_avail_build_caps(iommu, &caps);
-
+	//当前可以映射的iova 的范围  这个好像是iommu子系统决定的
 	if (!ret)
 		ret = vfio_iommu_iova_build_caps(iommu, &caps);
 
@@ -2822,7 +2833,7 @@ static int vfio_iommu_type1_get_info(struct vfio_iommu *iommu,
 
 	if (ret)
 		return ret;
-
+	//有扩展信息给用户
 	if (caps.size) {
 		info.flags |= VFIO_IOMMU_INFO_CAPS;
 
@@ -2855,13 +2866,13 @@ static int vfio_iommu_type1_map_dma(struct vfio_iommu *iommu,
 			VFIO_DMA_MAP_FLAG_VADDR;
 
 	minsz = offsetofend(struct vfio_iommu_type1_dma_map, size);
-
+	//从用户空间拷贝数据
 	if (copy_from_user(&map, (void __user *)arg, minsz))
 		return -EFAULT;
-
+	//检查参数有效性
 	if (map.argsz < minsz || map.flags & ~mask)
 		return -EINVAL;
-
+	//真正执行iommu
 	return vfio_dma_do_map(iommu, &map);
 }
 
