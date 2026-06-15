@@ -428,27 +428,31 @@ int vfio_container_attach_group(struct vfio_container *container,
 	int ret = 0;
 
 	lockdep_assert_held(&group->group_lock);
-
+	//no iommu 模式检查
 	if (group->type == VFIO_NO_IOMMU && !capable(CAP_SYS_RAWIO))
 		return -EPERM;
 
 	down_write(&container->group_lock);
 
 	/* Real groups and fake groups cannot mix */
+	//一个container中不能同时放iommu 和no iommu
 	if (!list_empty(&container->group_list) &&
 	    container->noiommu != (group->type == VFIO_NO_IOMMU)) {
 		ret = -EPERM;
 		goto out_unlock_container;
 	}
-
+	//这里相当于声明 这个iommu group的 dma管理归VFIO管了
 	if (group->type == VFIO_IOMMU) {
 		ret = iommu_group_claim_dma_owner(group->iommu_group, group);
 		if (ret)
 			goto out_unlock_container;
 	}
-
+	//看 container 是否已经设置过 iommu driver
+	//这是有可能的，因为可能调用过set iommu了
+	//所以这个的这个group要立刻attach到这个iommu后端
 	driver = container->iommu_driver;
 	if (driver) {
+		//其实这里在set iommu的时候也调用了，其实就是看先后顺序
 		ret = driver->ops->attach_group(container->iommu_data,
 						group->iommu_group,
 						group->type);
@@ -459,10 +463,11 @@ int vfio_container_attach_group(struct vfio_container *container,
 			goto out_unlock_container;
 		}
 	}
-
+	//真正把 group 挂到 container 上
 	group->container = container;
 	group->container_users = 1;
 	container->noiommu = (group->type == VFIO_NO_IOMMU);
+	//把当前 group 加入 container 的 group 链表
 	list_add(&group->container_next, &container->group_list);
 
 	/* Get a reference on the container and mark a user within the group */

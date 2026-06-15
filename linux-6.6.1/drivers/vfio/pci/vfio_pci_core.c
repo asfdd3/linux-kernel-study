@@ -108,13 +108,13 @@ static unsigned int vfio_pci_set_decode(struct pci_dev *pdev, bool single_vga)
 
 	return decodes;
 }
-
+//检查 PCI 设备的每个 BAR 能不能通过 VFIO mmap 给用户态；能 mmap 的就设置 vdev->bar_mmap_supported[bar] = true，不能 mmap 的就标记为 false。
 static void vfio_pci_probe_mmaps(struct vfio_pci_core_device *vdev)
 {
 	struct resource *res;
 	int i;
 	struct vfio_pci_dummy_resource *dummy_res;
-
+	//默认是6个bar空间
 	for (i = 0; i < PCI_STD_NUM_BARS; i++) {
 		int bar = i + PCI_STD_RESOURCES;
 
@@ -122,7 +122,7 @@ static void vfio_pci_probe_mmaps(struct vfio_pci_core_device *vdev)
 
 		if (!IS_ENABLED(CONFIG_VFIO_PCI_MMAP))
 			goto no_mmap;
-
+		//BAR 必须是内存类型
 		if (!(res->flags & IORESOURCE_MEM))
 			goto no_mmap;
 
@@ -131,14 +131,15 @@ static void vfio_pci_probe_mmaps(struct vfio_pci_core_device *vdev)
 		 * type but zero size. But there may be bugs that
 		 * cause us to do that.
 		 */
+		//BAR 长度不能为 0
 		if (!resource_size(res))
 			goto no_mmap;
-
+		//BAR 的大小大于等于一个物理页
 		if (resource_size(res) >= PAGE_SIZE) {
 			vdev->bar_mmap_supported[bar] = true;
 			continue;
 		}
-
+		//处理没有对其的情况
 		if (!(res->start & ~PAGE_MASK)) {
 			/*
 			 * Add a dummy resource to reserve the remainder
@@ -174,6 +175,7 @@ static void vfio_pci_probe_mmaps(struct vfio_pci_core_device *vdev)
 		 * the BAR's location in a page.
 		 */
 no_mmap:
+		//标记支持mmap
 		vdev->bar_mmap_supported[bar] = false;
 	}
 }
@@ -473,7 +475,7 @@ int vfio_pci_core_enable(struct vfio_pci_core_device *vdev)
 	int ret;
 	u16 cmd;
 	u8 msix_pos;
-
+	//低功耗模式下就唤醒 PCI 设备
 	if (!disable_idle_d3) {
 		ret = pm_runtime_resume_and_get(&pdev->dev);
 		if (ret < 0)
@@ -481,33 +483,37 @@ int vfio_pci_core_enable(struct vfio_pci_core_device *vdev)
 	}
 
 	/* Don't allow our initial saved state to include busmaster */
+	//不要让保存下来的 PCI 初始状态里包含 DMA 使能位
 	pci_clear_master(pdev);
-
+	//使能这个设备
 	ret = pci_enable_device(pdev);
 	if (ret)
 		goto out_power;
 
 	/* If reset fails because of the device lock, fail this path entirely */
+	//复位设备
 	ret = pci_try_reset_function(pdev);
 	if (ret == -EAGAIN)
 		goto out_disable_device;
 
 	vdev->reset_works = !ret;
 	pci_save_state(pdev);
+	//保存 PCI 配置空间
 	vdev->pci_saved_state = pci_store_saved_state(pdev);
 	if (!vdev->pci_saved_state)
 		pci_dbg(pdev, "%s: Couldn't store saved state\n", __func__);
 
 	if (likely(!nointxmask)) {
-		if (vfio_pci_nointx(pdev)) {
+		if (vfio_pci_nointx(pdev)) { //检查这个设备是不是不能用 INTx 返回true表示有问题
 			pci_info(pdev, "Masking broken INTx support\n");
-			vdev->nointx = true;
-			pci_intx(pdev, 0);
+			vdev->nointx = true; 
+			pci_intx(pdev, 0); //关闭 INTx
 		} else
-			vdev->pci_2_3 = pci_intx_mask_supported(pdev);
+			vdev->pci_2_3 = pci_intx_mask_supported(pdev);//如果没问题
 	}
-
+	//读取 PCI_COMMAND 寄存器
 	pci_read_config_word(pdev, PCI_COMMAND, &cmd);
+	//如果支持 INTx mask，但当前 INTx 被 disable，就重新打开
 	if (vdev->pci_2_3 && (cmd & PCI_COMMAND_INTX_DISABLE)) {
 		cmd &= ~PCI_COMMAND_INTX_DISABLE;
 		pci_write_config_word(pdev, PCI_COMMAND, cmd);
@@ -516,7 +522,8 @@ int vfio_pci_core_enable(struct vfio_pci_core_device *vdev)
 	ret = vfio_pci_zdev_open_device(vdev);
 	if (ret)
 		goto out_free_state;
-
+	// 初始化 VFIO 维护的虚拟 PCI 配置空间让用户态后续读写 PCI config space 时
+	// VFIO 能拦截和保护 BAR、COMMAND、INTx、MSI/MSI-X 等敏感字段，而不是直接读写硬件的配置空间
 	ret = vfio_config_init(vdev);
 	if (ret)
 		goto out_free_zdev;
@@ -525,10 +532,10 @@ int vfio_pci_core_enable(struct vfio_pci_core_device *vdev)
 	if (msix_pos) {
 		u16 flags;
 		u32 table;
-
+		//读取msix的配置信息
 		pci_read_config_word(pdev, msix_pos + PCI_MSIX_FLAGS, &flags);
 		pci_read_config_dword(pdev, msix_pos + PCI_MSIX_TABLE, &table);
-
+		//保存MSI-X Table 在哪个 BAR BAR 内偏移是多少 Table 总大小
 		vdev->msix_bar = table & PCI_MSIX_TABLE_BIR;
 		vdev->msix_offset = table & PCI_MSIX_TABLE_OFFSET;
 		vdev->msix_size = ((flags & PCI_MSIX_FLAGS_QSIZE) + 1) * 16;
@@ -1010,7 +1017,7 @@ static int vfio_pci_ioctl_get_info(struct vfio_pci_core_device *vdev,
 
 	return copy_to_user(arg, &info, minsz) ? -EFAULT : 0;
 }
-
+//向用户态程序返回设备某个内存区域（region）的详细信息
 static int vfio_pci_ioctl_get_region_info(struct vfio_pci_core_device *vdev,
 					  struct vfio_region_info __user *arg)
 {
@@ -1027,14 +1034,17 @@ static int vfio_pci_ioctl_get_region_info(struct vfio_pci_core_device *vdev,
 		return -EINVAL;
 
 	switch (info.index) {
+	//配置空间 ，支持读写
 	case VFIO_PCI_CONFIG_REGION_INDEX:
 		info.offset = VFIO_PCI_INDEX_TO_OFFSET(info.index);
 		info.size = pdev->cfg_size;
 		info.flags = VFIO_REGION_INFO_FLAG_READ |
 			     VFIO_REGION_INFO_FLAG_WRITE;
 		break;
+	// BAR0 ~ BAR5
 	case VFIO_PCI_BAR0_REGION_INDEX ... VFIO_PCI_BAR5_REGION_INDEX:
 		info.offset = VFIO_PCI_INDEX_TO_OFFSET(info.index);
+		//BAR 的真实长度
 		info.size = pci_resource_len(pdev, info.index);
 		if (!info.size) {
 			info.flags = 0;
@@ -1043,8 +1053,10 @@ static int vfio_pci_ioctl_get_region_info(struct vfio_pci_core_device *vdev,
 
 		info.flags = VFIO_REGION_INFO_FLAG_READ |
 			     VFIO_REGION_INFO_FLAG_WRITE;
+		//标记可以mmap
 		if (vdev->bar_mmap_supported[info.index]) {
 			info.flags |= VFIO_REGION_INFO_FLAG_MMAP;
+			//MSI-X BAR 特殊处理
 			if (info.index == vdev->msix_bar) {
 				ret = msix_mmappable_cap(vdev, &caps);
 				if (ret)
@@ -1053,6 +1065,7 @@ static int vfio_pci_ioctl_get_region_info(struct vfio_pci_core_device *vdev,
 		}
 
 		break;
+	//ROM 区域
 	case VFIO_PCI_ROM_REGION_INDEX: {
 		void __iomem *io;
 		size_t size;
@@ -1088,6 +1101,7 @@ static int vfio_pci_ioctl_get_region_info(struct vfio_pci_core_device *vdev,
 
 		break;
 	}
+	//VGA
 	case VFIO_PCI_VGA_REGION_INDEX:
 		if (!vdev->has_vga)
 			return -EINVAL;
@@ -1098,6 +1112,7 @@ static int vfio_pci_ioctl_get_region_info(struct vfio_pci_core_device *vdev,
 			     VFIO_REGION_INFO_FLAG_WRITE;
 
 		break;
+	//扩展区域
 	default: {
 		struct vfio_region_info_cap_type cap_type = {
 			.header.id = VFIO_REGION_INFO_CAP_TYPE,
@@ -1806,15 +1821,16 @@ int vfio_pci_core_mmap(struct vfio_device *core_vdev, struct vm_area_struct *vma
 	unsigned int index;
 	u64 phys_len, req_len, pgoff, req_start;
 	int ret;
-
+	//获取bar的索引
 	index = vma->vm_pgoff >> (VFIO_PCI_OFFSET_SHIFT - PAGE_SHIFT);
-
+	//参数合法性检查
 	if (index >= VFIO_PCI_NUM_REGIONS + vdev->num_regions)
 		return -EINVAL;
 	if (vma->vm_end < vma->vm_start)
 		return -EINVAL;
 	if ((vma->vm_flags & VM_SHARED) == 0)
 		return -EINVAL;
+	//有额外 region的处理
 	if (index >= VFIO_PCI_NUM_REGIONS) {
 		int regnum = index - VFIO_PCI_NUM_REGIONS;
 		struct vfio_pci_region *region = vdev->region + regnum;
@@ -1826,15 +1842,19 @@ int vfio_pci_core_mmap(struct vfio_device *core_vdev, struct vm_area_struct *vma
 	}
 	if (index >= VFIO_PCI_ROM_REGION_INDEX)
 		return -EINVAL;
+	//不支持也直接返回，这个是在open_device中设置的
 	if (!vdev->bar_mmap_supported[index])
 		return -EINVAL;
-
+	//验证映射范围不超出 BAR 物理长度
 	phys_len = PAGE_ALIGN(pci_resource_len(pdev, index));
+	//用户请求映射的长度
 	req_len = vma->vm_end - vma->vm_start;
+	//用户想要从 BAR 的第几个页开始映射
 	pgoff = vma->vm_pgoff &
 		((1U << (VFIO_PCI_OFFSET_SHIFT - PAGE_SHIFT)) - 1);
+	//字节的偏移
 	req_start = pgoff << PAGE_SHIFT;
-
+	//长度检查
 	if (req_start + req_len > phys_len)
 		return -EINVAL;
 
@@ -1843,11 +1863,12 @@ int vfio_pci_core_mmap(struct vfio_device *core_vdev, struct vm_area_struct *vma
 	 * we need to request the region and the barmap tracks that.
 	 */
 	if (!vdev->barmap[index]) {
+		//向PCI 子系统申请占用该 BAR 的 I/O 或内存资源，正常的内核驱动也要这么写
 		ret = pci_request_selected_regions(pdev,
 						   1 << index, "vfio-pci");
 		if (ret)
 			return ret;
-
+		//内核虚拟地址空间中映射整个 BAR 但是好像并不使用这个地址
 		vdev->barmap[index] = pci_iomap(pdev, index, 0);
 		if (!vdev->barmap[index]) {
 			pci_release_selected_regions(pdev, 1 << index);
@@ -1856,7 +1877,9 @@ int vfio_pci_core_mmap(struct vfio_device *core_vdev, struct vm_area_struct *vma
 	}
 
 	vma->vm_private_data = vdev;
+	//这是设置页表的属性
 	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
+	//变成物理页帧号
 	vma->vm_pgoff = (pci_resource_start(pdev, index) >> PAGE_SHIFT) + pgoff;
 
 	/*
@@ -1864,6 +1887,8 @@ int vfio_pci_core_mmap(struct vfio_device *core_vdev, struct vm_area_struct *vma
 	 * change vm_flags within the fault handler.  Set them now.
 	 */
 	vm_flags_set(vma, VM_IO | VM_PFNMAP | VM_DONTEXPAND | VM_DONTDUMP);
+	//这里其实并没有真正的映射bar空间
+	//延迟到用户进程第一次访问时，通过缺页异常触发 vfio_pci_fault
 	vma->vm_ops = &vfio_pci_mmap_ops;
 
 	return 0;

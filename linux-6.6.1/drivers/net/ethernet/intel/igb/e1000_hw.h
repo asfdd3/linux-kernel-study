@@ -390,7 +390,7 @@ struct e1000_mac_info {
 	bool autoneg;
 	bool autoneg_failed;
 	bool disable_hw_init_bits;
-	bool get_link_status;
+	bool get_link_status;  //不是表示down了  应该是表示link状态没有变化
 	bool ifs_params_forced;
 	bool in_ifs_mode;
 	bool report_tx_early;

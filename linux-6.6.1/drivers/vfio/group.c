@@ -33,7 +33,7 @@ static struct vfio_device *vfio_device_get_from_name(struct vfio_group *group,
 		int ret;
 
 		if (it->ops->match) {
-			ret = it->ops->match(it, buf);
+			ret = it->ops->match(it, buf); //vfio_pci_core_match
 			if (ret < 0) {
 				device = ERR_PTR(ret);
 				break;
@@ -110,12 +110,13 @@ static int vfio_group_ioctl_set_container(struct vfio_group *group,
 
 	if (get_user(fd, arg))
 		return -EFAULT;
-
+	//用户态传入的container fd
 	f = fdget(fd);
 	if (!f.file)
 		return -EBADF;
 
 	mutex_lock(&group->group_lock);
+	//是否绑定过iommu对象
 	if (vfio_group_has_iommu(group)) {
 		ret = -EINVAL;
 		goto out_unlock;
@@ -124,13 +125,14 @@ static int vfio_group_ioctl_set_container(struct vfio_group *group,
 		ret = -ENODEV;
 		goto out_unlock;
 	}
-
+	//传统 VFIO container fd
 	container = vfio_container_from_file(f.file);
 	if (container) {
+		//把 group 挂到 container 上 ，注意这里处理完就直接返回了
 		ret = vfio_container_attach_group(container, group);
 		goto out_unlock;
 	}
-
+	//第二种 iommufd 这里不分析
 	iommufd = iommufd_ctx_from_file(f.file);
 	if (!IS_ERR(iommufd)) {
 		if (IS_ENABLED(CONFIG_VFIO_NOIOMMU) &&
@@ -183,9 +185,10 @@ static int vfio_df_group_open(struct vfio_device_file *df)
 	 * now that will be held until the open_count reaches 0 again.  Save
 	 * the pointer in the device for use by drivers.
 	 */
+	//KVM相关
 	if (device->open_count == 0)
 		vfio_device_group_get_kvm_safe(device);
-
+	////iommufd相关
 	df->iommufd = device->group->iommufd;
 	if (df->iommufd && vfio_device_is_noiommu(device) && device->open_count == 0) {
 		/*
@@ -200,11 +203,11 @@ static int vfio_df_group_open(struct vfio_device_file *df)
 			ret = 0;
 		goto out_put_kvm;
 	}
-
+	//最关键的就是这个 ，这里面调用了open_device回调
 	ret = vfio_df_open(df);
 	if (ret)
 		goto out_put_kvm;
-
+	//iommufd相关
 	if (df->iommufd && device->open_count == 1) {
 		ret = vfio_iommufd_compat_attach_ioas(device, df->iommufd);
 		if (ret)
@@ -255,15 +258,16 @@ static struct file *vfio_device_open_file(struct vfio_device *device)
 	struct vfio_device_file *df;
 	struct file *filep;
 	int ret;
-
+	//分配 vfio_device_file 它是 device fd 的私有上下文
+	//设置的vfio device
 	df = vfio_allocate_device_file(device);
 	if (IS_ERR(df)) {
 		ret = PTR_ERR(df);
 		goto err_out;
 	}
-
+	//这里设置了 vfio group
 	df->group = device->group;
-
+	//把上面申请的df传进去了 ，这里面调用了pci设备的open
 	ret = vfio_df_group_open(df);
 	if (ret)
 		goto err_free;
@@ -272,6 +276,11 @@ static struct file *vfio_device_open_file(struct vfio_device *device)
 	 * We can't use anon_inode_getfd() because we need to modify
 	 * the f_mode flags directly to allow more than just ioctls
 	 */
+	// 创建一个匿名 struct file
+	// 这个 file 不对应磁盘文件，而是内核创建的一个匿名文件对象
+	// file->f_op = &vfio_device_fops
+	// 注意里面 file->private_data = df
+	// 后面用户态拿到的 device_fd，本质上就是指向这个 file
 	filep = anon_inode_getfile("[vfio-device]", &vfio_device_fops,
 				   df, O_RDWR);
 	if (IS_ERR(filep)) {
@@ -302,7 +311,7 @@ err_free:
 err_out:
 	return ERR_PTR(ret);
 }
-
+//用户态传入设备名 "0000:01:00.0"
 static int vfio_group_ioctl_get_device_fd(struct vfio_group *group,
 					  char __user *arg)
 {
@@ -315,24 +324,25 @@ static int vfio_group_ioctl_get_device_fd(struct vfio_group *group,
 	buf = strndup_user(arg, PAGE_SIZE);
 	if (IS_ERR(buf))
 		return PTR_ERR(buf);
-
+	//根据设备名在 group 里找 vfio_device 
+	//这里会调用设备的ops vfio_pci_core_match
 	device = vfio_device_get_from_name(group, buf);
 	kfree(buf);
 	if (IS_ERR(device))
 		return PTR_ERR(device);
-
+	//分配一个新的 fd
 	fdno = get_unused_fd_flags(O_CLOEXEC);
 	if (fdno < 0) {
 		ret = fdno;
 		goto err_put_device;
 	}
-
+	//为 vfio_device 创建 struct file
 	filep = vfio_device_open_file(device);
 	if (IS_ERR(filep)) {
 		ret = PTR_ERR(filep);
 		goto err_put_fdno;
 	}
-
+	//关联fd 和file
 	fd_install(fdno, filep);
 	return fdno;
 

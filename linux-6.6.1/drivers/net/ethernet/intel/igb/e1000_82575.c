@@ -407,10 +407,13 @@ static s32 igb_init_mac_params_82575(struct e1000_hw *hw)
 	struct e1000_dev_spec_82575 *dev_spec = &hw->dev_spec._82575;
 
 	/* Set mta register count */
+	//多播地址过滤表
 	mac->mta_reg_count = 128;
 	/* Set uta register count */
+	//单播地址过滤表,hash匹配
 	mac->uta_reg_count = (hw->mac.type == e1000_82575) ? 0 : 128;
 	/* Set rar entry count */
+	//精确 MAC 地址匹配
 	switch (mac->type) {
 	case e1000_82576:
 		mac->rar_entry_count = E1000_RAR_ENTRIES_82576;
@@ -427,11 +430,12 @@ static s32 igb_init_mac_params_82575(struct e1000_hw *hw)
 		break;
 	}
 	/* reset */
+	//设置复位函数
 	if (mac->type >= e1000_82580)
 		mac->ops.reset_hw = igb_reset_hw_82580;
 	else
 		mac->ops.reset_hw = igb_reset_hw_82575;
-
+	//保证驱动和固件同步的函数
 	if (mac->type >= e1000_i210) {
 		mac->ops.acquire_swfw_sync = igb_acquire_swfw_sync_i210;
 		mac->ops.release_swfw_sync = igb_release_swfw_sync_i210;
@@ -440,7 +444,7 @@ static s32 igb_init_mac_params_82575(struct e1000_hw *hw)
 		mac->ops.acquire_swfw_sync = igb_acquire_swfw_sync_82575;
 		mac->ops.release_swfw_sync = igb_release_swfw_sync_82575;
 	}
-
+	//设置VLAN过滤表
 	if ((hw->mac.type == e1000_i350) || (hw->mac.type == e1000_i354))
 		mac->ops.write_vfta = igb_write_vfta_i350;
 	else
@@ -453,6 +457,7 @@ static s32 igb_init_mac_params_82575(struct e1000_hw *hw)
 		(rd32(E1000_FWSM) & E1000_FWSM_MODE_MASK)
 			? true : false;
 	/* enable EEE on i350 parts and later parts */
+	//根据 MAC 类型决定是否启用 EEE,好像是低功耗相关
 	if (mac->type >= e1000_i350)
 		dev_spec->eee_disable = false;
 	else
@@ -461,10 +466,11 @@ static s32 igb_init_mac_params_82575(struct e1000_hw *hw)
 	if (mac->type >= e1000_i210)
 		dev_spec->clear_semaphore_once = true;
 	/* physical interface link setup */
+	//配置 MAC 内部的 SerDes/PCS 模块的回调
 	mac->ops.setup_physical_interface =
 		(hw->phy.media_type == e1000_media_type_copper)
-			? igb_setup_copper_link_82575
-			: igb_setup_serdes_link_82575;
+			? igb_setup_copper_link_82575//rj45
+			: igb_setup_serdes_link_82575; //SerDes 光口
 
 	if (mac->type == e1000_82580 || mac->type == e1000_i350) {
 		switch (hw->device_id) {
@@ -558,7 +564,7 @@ static s32 igb_get_invariants_82575(struct e1000_hw *hw)
 	s32 ret_val;
 	u32 ctrl_ext = 0;
 	u32 link_mode = 0;
-
+	//根据 device_id 判断 MAC 类型
 	switch (hw->device_id) {
 	case E1000_DEV_ID_82575EB_COPPER:
 	case E1000_DEV_ID_82575EB_FIBER_SERDES:
@@ -620,29 +626,30 @@ static s32 igb_get_invariants_82575(struct e1000_hw *hw)
 	 * SerDes mode on the 82575. There can be an external PHY attached
 	 * on the SGMII interface. For this, we'll set sgmii_active to true.
 	 */
+	//默认先认为认按 RJ45
 	hw->phy.media_type = e1000_media_type_copper;
 	dev_spec->sgmii_active = false;
 	dev_spec->module_plugged = false;
-
+	//读寄存器判断MAC和PHY的连接方式
 	ctrl_ext = rd32(E1000_CTRL_EXT);
-
+	//根据 link mode 设置 media_type
 	link_mode = ctrl_ext & E1000_CTRL_EXT_LINK_MODE_MASK;
 	switch (link_mode) {
-	case E1000_CTRL_EXT_LINK_MODE_1000BASE_KX:
-		hw->phy.media_type = e1000_media_type_internal_serdes;
+	case E1000_CTRL_EXT_LINK_MODE_1000BASE_KX:  //不是连接到外部 RJ45 插座或 SFP 笼子
+		hw->phy.media_type = e1000_media_type_internal_serdes; //不是RJ45 通过背板serdes连接
 		break;
 	case E1000_CTRL_EXT_LINK_MODE_SGMII:
 		/* Get phy control interface type set (MDIO vs. I2C)*/
-		if (igb_sgmii_uses_mdio_82575(hw)) {
-			hw->phy.media_type = e1000_media_type_copper;
+		if (igb_sgmii_uses_mdio_82575(hw)) {  //通过MDIO 管理phy
+			hw->phy.media_type = e1000_media_type_copper;//走RJ45 ，通常是这个吧
 			dev_spec->sgmii_active = true;
 			break;
 		}
-		fallthrough; /* for I2C based SGMII */
-	case E1000_CTRL_EXT_LINK_MODE_PCIE_SERDES:
+		fallthrough; /* for I2C based SGMII */ //这里fall through
+	case E1000_CTRL_EXT_LINK_MODE_PCIE_SERDES:  //是 SFP/SerDes 类型（可插拔光模块或铜缆直连模块）
 		/* read media type from SFP EEPROM */
-		ret_val = igb_set_sfp_media_type_82575(hw);
-		if ((ret_val != 0) ||
+		ret_val = igb_set_sfp_media_type_82575(hw); //读寄存器判断模块类型
+		if ((ret_val != 0) ||    //没读到，设置成默认的
 		    (hw->phy.media_type == e1000_media_type_unknown)) {
 			/* If media type was not identified then return media
 			 * type defined by the CTRL_EXT settings.
@@ -658,12 +665,13 @@ static s32 igb_get_invariants_82575(struct e1000_hw *hw)
 		}
 
 		/* change current link mode setting */
+		//清掉 ctrl_ext 里的旧 link mode 位
 		ctrl_ext &= ~E1000_CTRL_EXT_LINK_MODE_MASK;
 
 		if (dev_spec->sgmii_active)
-			ctrl_ext |= E1000_CTRL_EXT_LINK_MODE_SGMII;
+			ctrl_ext |= E1000_CTRL_EXT_LINK_MODE_SGMII; //走 SGMII
 		else
-			ctrl_ext |= E1000_CTRL_EXT_LINK_MODE_PCIE_SERDES;
+			ctrl_ext |= E1000_CTRL_EXT_LINK_MODE_PCIE_SERDES;//SerDes
 
 		wr32(E1000_CTRL_EXT, ctrl_ext);
 
@@ -673,11 +681,13 @@ static s32 igb_get_invariants_82575(struct e1000_hw *hw)
 	}
 
 	/* mac initialization and operations */
+	//初始化mac 挂上ops 比如复位的ops
 	ret_val = igb_init_mac_params_82575(hw);
 	if (ret_val)
 		goto out;
 
 	/* NVM initialization */
+	//初始化nvm
 	ret_val = igb_init_nvm_params_82575(hw);
 	switch (hw->mac.type) {
 	case e1000_i210:
@@ -692,6 +702,7 @@ static s32 igb_get_invariants_82575(struct e1000_hw *hw)
 		goto out;
 
 	/* if part supports SR-IOV then initialize mailbox parameters */
+	//初始化mbx的一系列ops
 	switch (mac->type) {
 	case e1000_82576:
 	case e1000_i350:
@@ -702,6 +713,7 @@ static s32 igb_get_invariants_82575(struct e1000_hw *hw)
 	}
 
 	/* setup PHY parameters */
+	//设置phy的ops
 	ret_val = igb_init_phy_params_82575(hw);
 
 out:
@@ -1311,6 +1323,7 @@ static s32 igb_check_for_link_82575(struct e1000_hw *hw)
 		if (ret_val)
 			hw_dbg("Error configuring flow control\n");
 	} else {
+		//检查是否link
 		ret_val = igb_check_for_copper_link(hw);
 	}
 
@@ -1456,19 +1469,23 @@ static s32 igb_reset_hw_82575(struct e1000_hw *hw)
 	/* Prevent the PCI-E bus from sticking if there is no TLP connection
 	 * on the last TLP read/write transaction when MAC is reset.
 	 */
+	//不要再主动通过 PCIe 去读写主机内存
 	ret_val = igb_disable_pcie_master(hw);
 	if (ret_val)
 		hw_dbg("PCI-E Master disable polling has failed.\n");
 
 	/* set the completion timeout for interface */
+	//重新设置 pcie 响应的超时时间
 	ret_val = igb_set_pcie_completion_timeout(hw);
 	if (ret_val)
 		hw_dbg("PCI-E Set completion timeout has failed.\n");
 
 	hw_dbg("Masking off all interrupts\n");
+	//屏蔽所有中断
 	wr32(E1000_IMC, 0xffffffff);
-
+	//关闭 RX 接收路径
 	wr32(E1000_RCTL, 0);
+	//tx
 	wr32(E1000_TCTL, E1000_TCTL_PSP);
 	wrfl();
 
@@ -1477,8 +1494,9 @@ static s32 igb_reset_hw_82575(struct e1000_hw *hw)
 	ctrl = rd32(E1000_CTRL);
 
 	hw_dbg("Issuing a global reset to MAC\n");
+	//设置 RST
 	wr32(E1000_CTRL, ctrl | E1000_CTRL_RST);
-
+	//NVM 自动配置读取完成
 	ret_val = igb_get_auto_rd_done(hw);
 	if (ret_val) {
 		/* When auto config read does not complete, do not
@@ -1497,6 +1515,7 @@ static s32 igb_reset_hw_82575(struct e1000_hw *hw)
 	rd32(E1000_ICR);
 
 	/* Install any alternate MAC address into RAR0 */
+	//是否有备用mac，如果有写入rar寄存器
 	ret_val = igb_check_alt_mac_addr(hw);
 
 	return ret_val;
@@ -1570,13 +1589,14 @@ static s32 igb_setup_copper_link_82575(struct e1000_hw *hw)
 	u32 ctrl;
 	s32  ret_val;
 	u32 phpm_reg;
-
+	//强制 MAC 认为链路已上电
 	ctrl = rd32(E1000_CTRL);
 	ctrl |= E1000_CTRL_SLU;
 	ctrl &= ~(E1000_CTRL_FRCSPD | E1000_CTRL_FRCDPX);
 	wr32(E1000_CTRL, ctrl);
 
 	/* Clear Go Link Disconnect bit on supported devices */
+	//清掉bit 否则可能禁止phy建立链接
 	switch (hw->mac.type) {
 	case e1000_82580:
 	case e1000_i350:

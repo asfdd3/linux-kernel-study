@@ -104,11 +104,10 @@ static int vfio_pci_open_device(struct vfio_device *core_vdev)
 		container_of(core_vdev, struct vfio_pci_core_device, vdev);
 	struct pci_dev *pdev = vdev->pdev;
 	int ret;
-
+	//这里使能了设备了
 	ret = vfio_pci_core_enable(vdev);
 	if (ret)
 		return ret;
-
 	if (vfio_pci_is_vga(pdev) &&
 	    pdev->vendor == PCI_VENDOR_ID_INTEL &&
 	    IS_ENABLED(CONFIG_VFIO_PCI_IGD)) {
@@ -119,7 +118,7 @@ static int vfio_pci_open_device(struct vfio_device *core_vdev)
 			return ret;
 		}
 	}
-
+	//检查 PCI 设备的每个 BAR 能不能通过 VFIO mmap 给用户态
 	vfio_pci_core_finish_enable(vdev);
 
 	return 0;
