@@ -9876,25 +9876,27 @@ int __netdev_update_features(struct net_device *dev)
 	int err = -1;
 
 	ASSERT_RTNL();
-
+	//先拿到最终需要开启的feature //(dev->features & ~dev->hw_features)
 	features = netdev_get_wanted_features(dev);
-
+	//先让驱动根据这个feature设置一下，igb基本上没干什么
 	if (dev->netdev_ops->ndo_fix_features)
 		features = dev->netdev_ops->ndo_fix_features(dev, features);
 
 	/* driver might be less strict about feature dependencies */
+	//内核再次修正一下这个feature  比如tso 依赖 sg 如果开了tso 但没开sg就关闭tso
 	features = netdev_fix_features(dev, features);
 
 	/* some features can't be enabled if they're off on an upper device */
+	//如果master关闭了 某些特性，那slave也不能开
 	netdev_for_each_upper_dev_rcu(dev, upper, iter)
 		features = netdev_sync_upper_features(dev, upper, features);
-
+	//如果feature没变
 	if (dev->features == features)
 		goto sync_lower;
-
+	//发生变化了 打印日志
 	netdev_dbg(dev, "Features changed: %pNF -> %pNF\n",
 		&dev->features, &features);
-
+	//重新设置硬件
 	if (dev->netdev_ops->ndo_set_features)
 		err = dev->netdev_ops->ndo_set_features(dev, features);
 	else
@@ -9914,12 +9916,13 @@ sync_lower:
 	/* some features must be disabled on lower devices when disabled
 	 * on an upper device (think: bonding master or bridge)
 	 */
+	//feature 没变的情况 ，同步slave设备
 	netdev_for_each_lower_dev(dev, lower, iter)
 		netdev_sync_lower_features(dev, lower, features);
 
-	if (!err) {
+	if (!err) {//表示set feature 成功
 		netdev_features_t diff = features ^ dev->features;
-
+		//处理 dup隧道相关的卸载
 		if (diff & NETIF_F_RX_UDP_TUNNEL_PORT) {
 			/* udp_tunnel_{get,drop}_rx_info both need
 			 * NETIF_F_RX_UDP_TUNNEL_PORT enabled on the
@@ -9935,7 +9938,7 @@ sync_lower:
 				udp_tunnel_drop_rx_info(dev);
 			}
 		}
-
+		//处理 vlan ctag
 		if (diff & NETIF_F_HW_VLAN_CTAG_FILTER) {
 			if (features & NETIF_F_HW_VLAN_CTAG_FILTER) {
 				dev->features = features;
@@ -9944,7 +9947,7 @@ sync_lower:
 				vlan_drop_rx_ctag_filter_info(dev);
 			}
 		}
-
+		//处理 vlan stag
 		if (diff & NETIF_F_HW_VLAN_STAG_FILTER) {
 			if (features & NETIF_F_HW_VLAN_STAG_FILTER) {
 				dev->features = features;
@@ -9953,7 +9956,7 @@ sync_lower:
 				vlan_drop_rx_stag_filter_info(dev);
 			}
 		}
-
+		//更新feature
 		dev->features = features;
 	}
 
@@ -10143,6 +10146,7 @@ int register_netdevice(struct net_device *dev)
 	might_sleep();
 
 	/* When net_device's are persistent, this will be fatal. */
+	//没注册过
 	BUG_ON(dev->reg_state != NETREG_UNINITIALIZED);
 	BUG_ON(!net);
 
@@ -10152,17 +10156,19 @@ int register_netdevice(struct net_device *dev)
 
 	spin_lock_init(&dev->addr_list_lock);
 	netdev_set_addr_lockdep_class(dev);
-
+	//设备名称合法性检查
 	ret = dev_get_valid_name(net, dev, dev->name);
 	if (ret < 0)
 		goto out;
 
 	ret = -ENOMEM;
+	//分配一个名称节点
 	dev->name_node = netdev_name_node_head_alloc(dev);
 	if (!dev->name_node)
 		goto out;
 
 	/* Init, if this function is available */
+	//调用驱动的初始化回调，通常没有吧
 	if (dev->netdev_ops->ndo_init) {
 		ret = dev->netdev_ops->ndo_init(dev);
 		if (ret) {
@@ -10171,7 +10177,7 @@ int register_netdevice(struct net_device *dev)
 			goto err_free_name;
 		}
 	}
-
+	//如果声明的有vlan卸载的能力，那必须有vlan回调
 	if (((dev->hw_features | dev->features) &
 	     NETIF_F_HW_VLAN_CTAG_FILTER) &&
 	    (!dev->netdev_ops->ndo_vlan_rx_add_vid ||
@@ -10180,7 +10186,7 @@ int register_netdevice(struct net_device *dev)
 		ret = -EINVAL;
 		goto err_uninit;
 	}
-
+	//分配ifindex
 	ret = dev_index_reserve(net, dev->ifindex);
 	if (ret < 0)
 		goto err_uninit;
@@ -10189,6 +10195,7 @@ int register_netdevice(struct net_device *dev)
 	/* Transfer changeable features to wanted_features and enable
 	 * software offloads (GSO and GRO).
 	 */
+	//设置硬件特性
 	dev->hw_features |= (NETIF_F_SOFT_FEATURES | NETIF_F_SOFT_FEATURES_OFF);
 	dev->features |= NETIF_F_SOFT_FEATURES;
 
@@ -10196,7 +10203,7 @@ int register_netdevice(struct net_device *dev)
 		dev->features |= NETIF_F_RX_UDP_TUNNEL_PORT;
 		dev->hw_features |= NETIF_F_RX_UDP_TUNNEL_PORT;
 	}
-
+	//这里很关键 前者是当前设备开启的，后者是硬件支持的，所以这里需要取交集
 	dev->wanted_features = dev->features & dev->hw_features;
 
 	if (!(dev->flags & IFF_LOOPBACK))
@@ -10227,19 +10234,20 @@ int register_netdevice(struct net_device *dev)
 	/* Make NETIF_F_SG inheritable to MPLS.
 	 */
 	dev->mpls_features |= NETIF_F_SG;
-
+	//通知链机制
 	ret = call_netdevice_notifiers(NETDEV_POST_INIT, dev);
 	ret = notifier_to_errno(ret);
 	if (ret)
 		goto err_ifindex_release;
-
+	//在 sysfs 中创建设备节点，里面注册一系列sys/class/net/相关的文件
+	//比如说协商的速率，本质是调用了ethtool的接口
 	ret = netdev_register_kobject(dev);
 	write_lock(&dev_base_lock);
 	dev->reg_state = ret ? NETREG_UNREGISTERED : NETREG_REGISTERED;
 	write_unlock(&dev_base_lock);
 	if (ret)
 		goto err_uninit_notify;
-
+	//ethtool也会调用这个函数  调用驱动的ndo_set_features
 	__netdev_update_features(dev);
 
 	/*
@@ -10250,12 +10258,17 @@ int register_netdevice(struct net_device *dev)
 	set_bit(__LINK_STATE_PRESENT, &dev->state);
 
 	linkwatch_init_dev(dev);
-
+	//这里很关键，这里是给每个注册的队列挂上一个qdisc！！
+	//还注册了netdev层的看门狗
 	dev_init_scheduler(dev);
 
 	netdev_hold(dev, &dev->dev_registered_tracker, GFP_KERNEL);
+	//这里把设备加入全局管理的结构
+	//加入网络命名空间的链表
+	//按名称加入hash表
+	//按接口索引加入hash表
 	list_netdevice(dev);
-
+	//把mac地址作为内核的一个随机数
 	add_device_randomness(dev->dev_addr, dev->addr_len);
 
 	/* If the device has permanent device address, driver should
@@ -10266,6 +10279,7 @@ int register_netdevice(struct net_device *dev)
 		memcpy(dev->perm_addr, dev->dev_addr, dev->addr_len);
 
 	/* Notify protocols, that a new device appeared. */
+	//通知有设备注册了，很关键
 	ret = call_netdevice_notifiers(NETDEV_REGISTER, dev);
 	ret = notifier_to_errno(ret);
 	if (ret) {

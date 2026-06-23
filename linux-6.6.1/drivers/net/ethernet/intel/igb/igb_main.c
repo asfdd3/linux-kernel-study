@@ -2001,18 +2001,23 @@ static void igb_configure(struct igb_adapter *adapter)
 {
 	struct net_device *netdev = adapter->netdev;
 	int i;
-
+	//告诉固件现在由硬件由驱动接管，本质就是写一个寄存器
 	igb_get_hw_control(adapter);
+	//配置rx 接收模式混杂多播等
 	igb_set_rx_mode(netdev);
+	//i210 特有，配置tx方向的硬件接收缓冲区
 	igb_setup_tx_mode(adapter);
-
+	//把驱动里记录的 VLAN 配置重新写回硬件
 	igb_restore_vlan(adapter);
-
+	//设置tx 方向padding
 	igb_setup_tctl(adapter);
+	//配置rss
 	igb_setup_mrqc(adapter);
+	//开启接收模块，设置广播接收 CRC 剥离 jumbo 支持
 	igb_setup_rctl(adapter);
-
+	//重新配置N元组过滤
 	igb_nfc_filter_restore(adapter);
+	//把 Tx ring 的 DMA 地址、长度、head/tail、队列控制参数写进网卡寄存器
 	igb_configure_tx(adapter);
 	igb_configure_rx(adapter);
 
@@ -2034,13 +2039,14 @@ static void igb_configure(struct igb_adapter *adapter)
  **/
 void igb_power_up_link(struct igb_adapter *adapter)
 {
+	//先复位phy
 	igb_reset_phy(&adapter->hw);
-
+	//写寄存器把phy 拉起来
 	if (adapter->hw.phy.media_type == e1000_media_type_copper)
 		igb_power_up_phy_copper(&adapter->hw);
 	else
 		igb_power_up_serdes_link_82575(&adapter->hw);
-
+	//真正完成对phy的配置
 	igb_setup_link(&adapter->hw);
 }
 
@@ -2325,7 +2331,6 @@ void igb_reset(struct igb_adapter *adapter)
 		u32 min_rx_space, min_tx_space, needed_tx_space;
 
 		/* write Rx PBA so that hardware can report correct Tx PBA */
-		//先把 Rx PBA 写进去，这样硬件才能正确报告当前 Tx PBA 分配
 		wr32(E1000_PBA, pba);
 
 		/* To maintain wire speed transmits, the Tx FIFO should be
@@ -2335,7 +2340,6 @@ void igb_reset(struct igb_adapter *adapter)
 		 * one full receive packet and is similarly rounded up and
 		 * expressed in KB.
 		 */
-		//计算 Rx 至少需要多少空间
 		min_rx_space = DIV_ROUND_UP(MAX_JUMBO_FRAME_SIZE, 1024);
 
 		/* The Tx FIFO also stores 16 bytes of information about the Tx
@@ -2348,7 +2352,6 @@ void igb_reset(struct igb_adapter *adapter)
 		min_tx_space = DIV_ROUND_UP(min_tx_space, 512);
 
 		/* upper 16 bits has Tx packet buffer allocation size in KB */
-		//如果 Tx 空间不够，就从 Rx 里面挪一点
 		needed_tx_space = min_tx_space - (rd32(E1000_PBA) >> 16);
 
 		/* If current Tx allocation is less than the min Tx FIFO size,
@@ -2377,7 +2380,6 @@ void igb_reset(struct igb_adapter *adapter)
 	 * Set it to:
 	 * - the full Rx FIFO size minus one full Tx plus one full Rx frame
 	 */
-	//计算 flow control 的高/低水位 这里的流控就是pause帧
 	hwm = (pba << 10) - (adapter->max_frame_size + MAX_JUMBO_FRAME_SIZE);
 
 	fc->high_water = hwm & 0xFFFFFFF0;	/* 16-byte granularity */
@@ -2387,7 +2389,6 @@ void igb_reset(struct igb_adapter *adapter)
 	fc->current_mode = fc->requested_mode;
 
 	/* disable receive for all VFs and wait one second */
-	//VF相关的处理
 	if (adapter->vfs_allocated_count) {
 		int i;
 
@@ -2403,7 +2404,6 @@ void igb_reset(struct igb_adapter *adapter)
 	}
 
 	/* Allow time for pending master requests to run */
-	//真正 reset 硬件 ，关闭中断，关闭tx rx等
 	hw->mac.ops.reset_hw(hw);
 	wr32(E1000_WUC, 0);
 
@@ -2416,18 +2416,14 @@ void igb_reset(struct igb_adapter *adapter)
 	    (adapter->flags & IGB_FLAG_MAS_ENABLE)) {
 		igb_enable_mas(adapter);
 	}
-	//重新初始化mac rar寄存器， link相关配置
 	if (hw->mac.ops.init_hw(hw))
 		dev_err(&pdev->dev, "Hardware Error\n");
 
 	/* RAR registers were cleared during init_hw, clear mac table */
-	//清理软件管理的mac地址表
 	igb_flush_mac_table(adapter);
-	//通过mac地址的状态
 	__dev_uc_unsync(adapter->netdev, NULL);
 
 	/* Recover default RAR entry */
-	//重新配置默认mac
 	igb_set_default_mac_filter(adapter);
 
 	/* Flow control settings reset on hardware reset, so guarantee flow
@@ -2435,7 +2431,7 @@ void igb_reset(struct igb_adapter *adapter)
 	 */
 	if (!hw->mac.autoneg)
 		igb_force_mac_fc(hw);
-	//初始化dmac
+
 	igb_init_dmac(adapter, pba);
 #ifdef CONFIG_IGB_HWMON
 	/* Re-initialize the thermal sensor on i350 devices. */
@@ -2451,7 +2447,6 @@ void igb_reset(struct igb_adapter *adapter)
 	}
 #endif
 	/* Re-establish EEE setting */
-	//eee相关
 	if (hw->phy.media_type == e1000_media_type_copper) {
 		switch (mac->type) {
 		case e1000_i350:
@@ -2466,7 +2461,6 @@ void igb_reset(struct igb_adapter *adapter)
 			break;
 		}
 	}
-	//用户如果没有up这个网卡，那就让网卡link down
 	if (!netif_running(adapter->netdev))
 		igb_power_down_link(adapter);
 
@@ -2478,7 +2472,7 @@ void igb_reset(struct igb_adapter *adapter)
 	/* Re-enable PTP, where applicable. */
 	if (adapter->ptp_flags & IGB_PTP_ENABLED)
 		igb_ptp_reset(adapter);
-	//更新link能力
+
 	igb_get_phy_info(hw);
 }
 
@@ -3453,20 +3447,18 @@ static int igb_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		wr32(E1000_RXPBS, I210_RXPBSIZE_DEFAULT);
 		wr32(E1000_TXPBS, I210_TXPBSIZE_DEFAULT);
 	}
-	//注册看门狗定时器，这个定时器就是调度工作队列，第二个定时器是获取link信息的定时器
+	//注册看门狗任务
 	timer_setup(&adapter->watchdog_timer, igb_watchdog, 0);
 	timer_setup(&adapter->phy_info_timer, igb_update_phy_info, 0);
-	//txtimeout会调用这个复位网卡
+
 	INIT_WORK(&adapter->reset_task, igb_reset_task);
-	//初始化看门狗工作队列
 	INIT_WORK(&adapter->watchdog_task, igb_watchdog_task);
 
 	/* Initialize link properties that are user-changeable */
-	//初始化link相关的字段
 	adapter->fc_autoneg = true;
 	hw->mac.autoneg = true;
 	hw->phy.autoneg_advertised = 0x2f;
-	//初始化流控
+
 	hw->fc.requested_mode = e1000_fc_default;
 	hw->fc.current_mode = e1000_fc_default;
 
@@ -3477,7 +3469,6 @@ static int igb_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		adapter->flags |= IGB_FLAG_WOL_SUPPORTED;
 
 	/* Check the NVM for wake support on non-port A ports */
-	//是否支持远程唤醒
 	if (hw->mac.type >= e1000_82580)
 		hw->nvm.ops.read(hw, NVM_INIT_CONTROL3_PORT_A +
 				 NVM_82580_LAN_FUNC_OFFSET(hw->bus.func), 1,
@@ -3572,7 +3563,7 @@ static int igb_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	 */
 	//通知固件硬件由驱动控制
 	igb_get_hw_control(adapter);
-	//这里虽然是eth0  但是udev好像会改名字
+
 	strcpy(netdev->name, "eth%d");
 	//真正的注册设备
 	err = register_netdev(netdev);
@@ -3582,7 +3573,7 @@ static int igb_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	/* carrier off reporting is important to ethtool even BEFORE open */
 	//注意这里先告诉协议栈网卡link还是down的状态！！！
 	netif_carrier_off(netdev);
-	//让设备DMA时候，把数据送到cpu cache 相关位置？
+
 #ifdef CONFIG_IGB_DCA
 	if (dca_add_requester(&pdev->dev) == 0) {
 		adapter->flags |= IGB_FLAG_DCA_ENABLED;
@@ -3590,7 +3581,7 @@ static int igb_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		igb_setup_dca(adapter);
 	}
 
-#endif//温度传感器
+#endif
 #ifdef CONFIG_IGB_HWMON
 	/* Initialize the thermal sensor on i350 devices. */
 	if (hw->mac.type == e1000_i350 && hw->bus.func == 0) {
@@ -3931,7 +3922,7 @@ static void igb_remove(struct pci_dev *pdev)
 
 	cancel_work_sync(&adapter->reset_task);
 	cancel_work_sync(&adapter->watchdog_task);
-	//不太懂什么是DAC
+
 #ifdef CONFIG_IGB_DCA
 	if (adapter->flags & IGB_FLAG_DCA_ENABLED) {
 		dev_info(&pdev->dev, "DCA disabled\n");
@@ -4194,26 +4185,30 @@ static int __igb_open(struct net_device *netdev, bool resuming)
 	int i;
 
 	/* disallow open during test */
+	//禁止在测试期间open， 这个标志位是ethtool中设置的
 	if (test_bit(__IGB_TESTING, &adapter->state)) {
 		WARN_ON(resuming);
 		return -EBUSY;
 	}
-
+	//电源管理相关
 	if (!resuming)
 		pm_runtime_get_sync(&pdev->dev);
-
+	//告诉内核当前是link down ，替换tc qdisc的对立
+	//后续看门狗任务检测会告诉内核 link up
 	netif_carrier_off(netdev);
 
 	/* allocate transmit descriptors */
+	//分配tx描述符资源
 	err = igb_setup_all_tx_resources(adapter);
 	if (err)
 		goto err_setup_tx;
 
 	/* allocate receive descriptors */
+	//分配rx描述符资源
 	err = igb_setup_all_rx_resources(adapter);
 	if (err)
 		goto err_setup_rx;
-
+	//复位并配置phy
 	igb_power_up_link(adapter);
 
 	/* before we allocate an interrupt, we must be ready to handle it.
@@ -4221,13 +4216,17 @@ static int __igb_open(struct net_device *netdev, bool resuming)
 	 * as soon as we call pci_request_irq, so we have to setup our
 	 * clean_rx handler before we do so.
 	 */
+	//设置rx mode  混杂，单播 配置 使能tx rx
+	//配置rss N元组过滤
+	//分配rx buffer
 	igb_configure(adapter);
-
+	//注册中断响应函数
 	err = igb_request_irq(adapter);
 	if (err)
 		goto err_req_irq;
 
 	/* Notify the stack of the actual queue counts. */
+	//告诉协议栈 tx rx 队列的实际数量
 	err = netif_set_real_num_tx_queues(adapter->netdev,
 					   adapter->num_tx_queues);
 	if (err)
@@ -4240,30 +4239,33 @@ static int __igb_open(struct net_device *netdev, bool resuming)
 
 	/* From here on the code is the same as igb_up() */
 	clear_bit(__IGB_DOWN, &adapter->state);
-
+	//使能 napi 注意此时还没有告诉协议栈link
 	for (i = 0; i < adapter->num_q_vectors; i++)
 		napi_enable(&(adapter->q_vector[i]->napi));
 
 	/* Clear any pending interrupts. */
+	//清楚挂起的中断
 	rd32(E1000_TSICR);
 	rd32(E1000_ICR);
-
+	//使能网卡硬件的终端能力
 	igb_irq_enable(adapter);
 
 	/* notify VFs that reset has been completed */
+	//vf相关
 	if (adapter->vfs_allocated_count) {
 		u32 reg_data = rd32(E1000_CTRL_EXT);
 
 		reg_data |= E1000_CTRL_EXT_PFRSTD;
 		wr32(E1000_CTRL_EXT, reg_data);
 	}
-
+	//clear  __QUEUE_STATE_DRV_XOFF 标志
 	netif_tx_start_all_queues(netdev);
 
 	if (!resuming)
 		pm_runtime_put(&pdev->dev);
 
 	/* start the watchdog. */
+	//调度igb自己的看门狗任务，检测link状态
 	hw->mac.get_link_status = 1;
 	schedule_work(&adapter->watchdog_task);
 
@@ -4340,23 +4342,28 @@ int igb_setup_tx_resources(struct igb_ring *tx_ring)
 {
 	struct device *dev = tx_ring->dev;
 	int size;
-
+	//tx buffer使用的数组的sdize
 	size = sizeof(struct igb_tx_buffer) * tx_ring->count;
-
+	//vmalloc 方式申请
 	tx_ring->tx_buffer_info = vmalloc(size);
 	if (!tx_ring->tx_buffer_info)
 		goto err;
 
 	/* round up to nearest 4K */
+	//描述符的大小
 	tx_ring->size = tx_ring->count * sizeof(union e1000_adv_tx_desc);
+	//4k对齐
 	tx_ring->size = ALIGN(tx_ring->size, 4096);
-
+	//注意这里是一致性dma映射 PCIe 设备 DMA 和 CPU cache 之间可以通过硬件协议保持一致性！！！！！！！！！
+	//区别和流式dma  区别是是否长期共享， cache一致性的处理方式不同，流式的需要驱动手动去cache sync
+	//一致性式分配加映射一起完成的
 	tx_ring->desc = dma_alloc_coherent(dev, tx_ring->size,
 					   &tx_ring->dma, GFP_KERNEL);
 	if (!tx_ring->desc)
 		goto err;
-
+	//下一个待使用的描述符的位置
 	tx_ring->next_to_use = 0;
+	//指向下一个准备清描述符的位置
 	tx_ring->next_to_clean = 0;
 
 	return 0;
@@ -4379,8 +4386,9 @@ static int igb_setup_all_tx_resources(struct igb_adapter *adapter)
 {
 	struct pci_dev *pdev = adapter->pdev;
 	int i, err = 0;
-
+	//遍历每个队列
 	for (i = 0; i < adapter->num_tx_queues; i++) {
+		//位每个队列分配描述符资源
 		err = igb_setup_tx_resources(adapter->tx_ring[i]);
 		if (err) {
 			dev_err(&pdev->dev,
@@ -4404,17 +4412,23 @@ void igb_setup_tctl(struct igb_adapter *adapter)
 	u32 tctl;
 
 	/* disable queue 0 which is enabled by default on 82575 and 82576 */
+	//先关闭 Tx queue 0
 	wr32(E1000_TXDCTL(0), 0);
 
 	/* Program the Transmit Control Register */
+	//读全局发送控制寄存器
 	tctl = rd32(E1000_TCTL);
+	//清bit
 	tctl &= ~E1000_TCTL_CT;
+	//以太网帧最小帧长是 64 字节，包括 FCS。
+	//让硬件自动补短包 E1000_TCTL_PSP
 	tctl |= E1000_TCTL_PSP | E1000_TCTL_RTLC |
 		(E1000_COLLISION_THRESHOLD << E1000_CT_SHIFT);
 
 	igb_config_collision_dist(hw);
 
 	/* Enable transmits */
+	//全局发送使能
 	tctl |= E1000_TCTL_EN;
 
 	wr32(E1000_TCTL, tctl);
@@ -4432,28 +4446,37 @@ void igb_configure_tx_ring(struct igb_adapter *adapter,
 {
 	struct e1000_hw *hw = &adapter->hw;
 	u32 txdctl = 0;
+	// DMA 地址，硬件通过这个地址访问描述符
 	u64 tdba = ring->dma;
+	// 当前软件 ring 对应的硬件队列寄存器编号
 	int reg_idx = ring->reg_idx;
-
+	// 设置 Tx descriptor ring 的长度，单位是字节
 	wr32(E1000_TDLEN(reg_idx),
 	     ring->count * sizeof(union e1000_adv_tx_desc));
+	// 设置 Tx descriptor ring 的 DMA 基地址低 32 位
 	wr32(E1000_TDBAL(reg_idx),
 	     tdba & 0x00000000ffffffffULL);
+	// 设置 Tx descriptor ring 的 DMA 基地址高 32 位
 	wr32(E1000_TDBAH(reg_idx), tdba >> 32);
-
+	// 后面发包快路径可以直接 writel(new_tail, ring->tail) 通知硬件
 	ring->tail = adapter->io_addr + E1000_TDT(reg_idx);
 	wr32(E1000_TDH(reg_idx), 0);
+	// 初始化 Tx descriptor tail，表示驱动当前还没有提交任何描述符
 	writel(0, ring->tail);
-
+	// 设置 Tx descriptor prefetch threshold
+	// 控制硬件预取描述符的阈值
 	txdctl |= IGB_TX_PTHRESH;
+	// 和硬件从主机内存读取描述符的策略有关
 	txdctl |= IGB_TX_HTHRESH << 8;
+	// 控制硬件写回描述符完成状态的节奏
 	txdctl |= IGB_TX_WTHRESH << 16;
-
-	/* reinitialize tx_buffer_info */
+	// 重新清空 tx_buffer_info 软件数组
+	// 这个数组是驱动自己用的，用来记录每个 Tx descriptor 对应的 skb、DMA 映射等信息
 	memset(ring->tx_buffer_info, 0,
 	       sizeof(struct igb_tx_buffer) * ring->count);
-
+	// 设置 Tx queue enable 位，表示启用当前 Tx 队列
 	txdctl |= E1000_TXDCTL_QUEUE_ENABLE;
+	// 把 TXDCTL 配置写入硬件，Tx 队列正式启用
 	wr32(E1000_TXDCTL(reg_idx), txdctl);
 }
 
@@ -4469,12 +4492,13 @@ static void igb_configure_tx(struct igb_adapter *adapter)
 	int i;
 
 	/* disable the queues */
+	//先disable 队列
 	for (i = 0; i < adapter->num_tx_queues; i++)
 		wr32(E1000_TXDCTL(adapter->tx_ring[i]->reg_idx), 0);
 
 	wrfl();
 	usleep_range(10000, 20000);
-
+	//循环配置每个队列的寄存器
 	for (i = 0; i < adapter->num_tx_queues; i++)
 		igb_configure_tx_ring(adapter, adapter->tx_ring[i]);
 }
@@ -4494,6 +4518,7 @@ int igb_setup_rx_resources(struct igb_ring *rx_ring)
 	/* XDP RX-queue info */
 	if (xdp_rxq_info_is_reg(&rx_ring->xdp_rxq))
 		xdp_rxq_info_unreg(&rx_ring->xdp_rxq);
+	//这里注意是传入传入xdp_rxq_info  这个结构，这个结构式xdp用于识别rx队列的元信息
 	res = xdp_rxq_info_reg(&rx_ring->xdp_rxq, rx_ring->netdev,
 			       rx_ring->queue_index, 0);
 	if (res < 0) {
@@ -4501,24 +4526,27 @@ int igb_setup_rx_resources(struct igb_ring *rx_ring)
 			rx_ring->queue_index);
 		return res;
 	}
-
+	//软件使用的rx buffer
 	size = sizeof(struct igb_rx_buffer) * rx_ring->count;
-
+	//申请
 	rx_ring->rx_buffer_info = vmalloc(size);
 	if (!rx_ring->rx_buffer_info)
 		goto err;
 
 	/* Round up to nearest 4K */
+	//计算描述符需要大小
 	rx_ring->size = rx_ring->count * sizeof(union e1000_adv_rx_desc);
 	rx_ring->size = ALIGN(rx_ring->size, 4096);
-
+	//一致性dma映射
 	rx_ring->desc = dma_alloc_coherent(dev, rx_ring->size,
 					   &rx_ring->dma, GFP_KERNEL);
 	if (!rx_ring->desc)
 		goto err;
-
+	//下一个待分配的，下一个
 	rx_ring->next_to_alloc = 0;
+	//NAPI poll 里从 next_to_clean 开始看
 	rx_ring->next_to_clean = 0;
+	//哪些 descriptor 已经准备好，可以交给硬件
 	rx_ring->next_to_use = 0;
 
 	rx_ring->xdp_prog = adapter->xdp_prog;
@@ -4569,13 +4597,14 @@ static void igb_setup_mrqc(struct igb_adapter *adapter)
 	u32 mrqc, rxcsum;
 	u32 j, num_rx_queues;
 	u32 rss_key[10];
-
+	//RSS hash 需要一个随机 key，从内核拿到一组rss key 
 	netdev_rss_key_fill(rss_key, sizeof(rss_key));
+	//写到硬件寄存器
 	for (j = 0; j < 10; j++)
 		wr32(E1000_RSSRK(j), rss_key[j]);
-
+	//拿到队列数量
 	num_rx_queues = adapter->rss_queues;
-
+	//特殊处理
 	switch (hw->mac.type) {
 	case e1000_82576:
 		/* 82576 supports 2 RSS queues for SR-IOV */
@@ -4585,19 +4614,20 @@ static void igb_setup_mrqc(struct igb_adapter *adapter)
 	default:
 		break;
 	}
-
+	//rss重定向表后续会hash到128个entry 每个enty指向一个队列
 	if (adapter->rss_indir_tbl_init != num_rx_queues) {
 		for (j = 0; j < IGB_RETA_SIZE; j++)
 			adapter->rss_indir_tbl[j] =
 			(j * num_rx_queues) / IGB_RETA_SIZE;
 		adapter->rss_indir_tbl_init = num_rx_queues;
-	}
+	}//把这个软件表写进硬件 RETA 寄存器
 	igb_write_rss_indir_tbl(adapter);
 
 	/* Disable raw packet checksumming so that RSS hash is placed in
 	 * descriptor on writeback.  No need to enable TCP/UDP/IP checksum
 	 * offloads as they are enabled by default
 	 */
+	//配置 RXCSUM，让 RSS hash 写回 descriptor!
 	rxcsum = rd32(E1000_RXCSUM);
 	rxcsum |= E1000_RXCSUM_PCSD;
 
@@ -4611,6 +4641,7 @@ static void igb_setup_mrqc(struct igb_adapter *adapter)
 	/* Generate RSS hash based on packet types, TCP/UDP
 	 * port numbers and/or IPv4/v6 src and dst addresses
 	 */
+	//选择哪些字段参与 RSS hash
 	mrqc = E1000_MRQC_RSS_FIELD_IPV4 |
 	       E1000_MRQC_RSS_FIELD_IPV4_TCP |
 	       E1000_MRQC_RSS_FIELD_IPV6 |
@@ -4626,6 +4657,7 @@ static void igb_setup_mrqc(struct igb_adapter *adapter)
 	 * we default to RSS so that an RSS hash is calculated per packet even
 	 * if we are only using one queue
 	 */
+	//如果有vf
 	if (adapter->vfs_allocated_count) {
 		if (hw->mac.type > e1000_82575) {
 			/* Set the default pool for the PF's first queue */
@@ -4645,7 +4677,7 @@ static void igb_setup_mrqc(struct igb_adapter *adapter)
 		mrqc |= E1000_MRQC_ENABLE_RSS_MQ;
 	}
 	igb_vmm_control(adapter);
-
+	//写mrqc寄存器
 	wr32(E1000_MRQC, mrqc);
 }
 
@@ -4657,12 +4689,12 @@ void igb_setup_rctl(struct igb_adapter *adapter)
 {
 	struct e1000_hw *hw = &adapter->hw;
 	u32 rctl;
-
+	//读当前 RCTL
 	rctl = rd32(E1000_RCTL);
-
+	//清掉组播 hash offset 和 loopback 模式
 	rctl &= ~(3 << E1000_RCTL_MO_SHIFT);
 	rctl &= ~(E1000_RCTL_LBM_TCVR | E1000_RCTL_LBM_MAC);
-
+	//打开接收模块，允许接收广播，设置组播 hash 类型
 	rctl |= E1000_RCTL_EN | E1000_RCTL_BAM | E1000_RCTL_RDMTS_HALF |
 		(hw->mac.mc_filter_type << E1000_RCTL_MO_SHIFT);
 
@@ -4670,12 +4702,15 @@ void igb_setup_rctl(struct igb_adapter *adapter)
 	 * redirection as it did with e1000. Newer features require
 	 * that the HW strips the CRC.
 	 */
+	 //CRC剥离
 	rctl |= E1000_RCTL_SECRC;
 
 	/* disable store bad packets and clear size bits. */
+	//默认不接收坏包，清掉bit
 	rctl &= ~(E1000_RCTL_SBP | E1000_RCTL_SZ_256);
 
 	/* enable LPE to allow for reception of jumbo frames */
+	//允许 jumbo frame
 	rctl |= E1000_RCTL_LPE;
 
 	/* disable queue 0 to prevent tail write w/o re-config */
@@ -4685,12 +4720,14 @@ void igb_setup_rctl(struct igb_adapter *adapter)
 	 * queue drop for all VF and PF queues to prevent head of line blocking
 	 * if an un-trusted VF does not provide descriptors to hardware.
 	 */
+	//SRIOV
 	if (adapter->vfs_allocated_count) {
 		/* set all queue drop enable bits */
 		wr32(E1000_QDE, ALL_QUEUES);
 	}
 
 	/* This is useful for sniffing bad packets. */
+	//RXALL 模式尽量接收异常包
 	if (adapter->netdev->features & NETIF_F_RXALL) {
 		/* UPE and MPE will be handled by normal PROMISC logic
 		 * in e1000e_set_rx_mode
@@ -5335,22 +5372,28 @@ static void igb_set_rx_mode(struct net_device *netdev)
 	int count;
 
 	/* Check for Promiscuous and All Multicast modes */
+	//混杂模式
 	if (netdev->flags & IFF_PROMISC) {
+		//单播混杂使能 组播混杂使能
 		rctl |= E1000_RCTL_UPE | E1000_RCTL_MPE;
+		//让这个 pool 也能接收组播混杂流量 vmqd sriov相关
 		vmolr |= E1000_VMOLR_MPME;
 
 		/* enable use of UTA filter to force packets to default pool */
+		//82576特殊处理
 		if (hw->mac.type == e1000_82576)
 			vmolr |= E1000_VMOLR_ROPE;
-	} else {
-		if (netdev->flags & IFF_ALLMULTI) {
-			rctl |= E1000_RCTL_MPE;
+	} else {//不是混杂模式
+		if (netdev->flags & IFF_ALLMULTI) { //接收多播报文
+			rctl |= E1000_RCTL_MPE; //组播混杂使能
 			vmolr |= E1000_VMOLR_MPME;
-		} else {
+		} else { //没开混杂，也没开 ALLMULTI
 			/* Write addresses to the MTA, if the attempt fails
 			 * then we should just turn on promiscuous mode so
 			 * that we can at least receive multicast traffic
 			 */
+			//把 netdev 当前维护的组播 MAC 地址列表写到网卡硬件组播过滤表里
+			//返回配置成功的数量
 			count = igb_write_mc_addr_list(netdev);
 			if (count < 0) {
 				rctl |= E1000_RCTL_MPE;
@@ -5365,15 +5408,22 @@ static void igb_set_rx_mode(struct net_device *netdev)
 	 * sufficient space to store all the addresses then enable
 	 * unicast promiscuous mode
 	 */
+	//把 netdev 里的单播地址同步到硬件过滤表
+	//igb_uc_sync() 会尝试把 MAC 地址写到硬件的 RAR的表里
+	//如果同步失败，说明硬件过滤表不够用了，比如 RAR 表放不下所有 MAC 地址
+	//就开启单播混杂
 	if (__dev_uc_sync(netdev, igb_uc_sync, igb_uc_unsync)) {
-		rctl |= E1000_RCTL_UPE;
+		rctl |= E1000_RCTL_UPE; //单播混杂
 		vmolr |= E1000_VMOLR_ROPE;
 	}
 
 	/* enable VLAN filtering by default */
+	//默认开启 VLAN filtering
 	rctl |= E1000_RCTL_VFE;
 
 	/* disable VLAN filtering for modes that require it */
+	//混杂模式下处理 VLAN 过滤
+	//混杂模式下，如果 VLAN filtering 还开着，可能仍然收不到某些 VLAN 包
 	if ((netdev->flags & IFF_PROMISC) ||
 	    (netdev->features & NETIF_F_RXALL)) {
 		/* if we fail to set all rules then just clear VFE */
@@ -5384,14 +5434,15 @@ static void igb_set_rx_mode(struct net_device *netdev)
 	}
 
 	/* update state of unicast, multicast, and VLAN filtering modes */
+	//更新 RCTL，只改 UPE/MPE/VFE 三个位 单播多播VLAN	
 	rctl |= rd32(E1000_RCTL) & ~(E1000_RCTL_UPE | E1000_RCTL_MPE |
 				     E1000_RCTL_VFE);
 	wr32(E1000_RCTL, rctl);
-
+	//设置全局最大接收长度
 #if (PAGE_SIZE < 8192)
 	if (!adapter->vfs_allocated_count) {
 		if (adapter->max_frame_size <= IGB_MAX_FRAME_BUILD_SKB)
-			rlpml = IGB_MAX_FRAME_BUILD_SKB;
+			rlpml = IGB_MAX_FRAME_BUILD_SKB; //1536
 	}
 #endif
 	wr32(E1000_RLPML, rlpml);
@@ -5401,10 +5452,12 @@ static void igb_set_rx_mode(struct net_device *netdev)
 	 * we will have issues with VLAN tag stripping not being done for frames
 	 * that are only arriving because we are the default pool
 	 */
+	//不是 82576 到 i350 之间的芯片，直接返回
 	if ((hw->mac.type < e1000_82576) || (hw->mac.type > e1000_i350))
 		return;
 
 	/* set UTA to appropriate mode */
+	//下面是SRIOV和vmdq相关
 	igb_set_uta(adapter, !!(vmolr & E1000_VMOLR_ROPE));
 
 	vmolr |= rd32(E1000_VMOLR(vfn)) &
@@ -5650,6 +5703,7 @@ static void igb_watchdog_task(struct work_struct *work)
 				netdev_warn(netdev, "Link Speed was downgraded by SmartSpeed\n");
 
 			/* check for thermal sensor event */
+			//是
 			if (igb_thermal_sensor_event(hw,
 			    E1000_THSTAT_LINK_THROTTLE))
 				netdev_info(netdev, "The network adapter link speed was downshifted because it overheated\n");
@@ -5671,9 +5725,7 @@ static void igb_watchdog_task(struct work_struct *work)
 
 			/* wait for Remote receiver status OK */
 retry_read_status:
-//不是只要本地检测到 1000M link up 就立刻告诉内核。
-//驱动还要确认对端 receiver 状态 OK
-		if (!igb_read_phy_reg(hw, PHY_1000T_STATUS,
+			if (!igb_read_phy_reg(hw, PHY_1000T_STATUS,
 					      &phy_data)) {
 				if (!(phy_data & SR_1000T_REMOTE_RX_STATUS) &&
 				    retry_count) {
@@ -5687,9 +5739,8 @@ retry_read_status:
 				dev_err(&adapter->pdev->dev, "read 1000Base-T Status Reg\n");
 			}
 no_wait:
-			//通知内核link up 很关键， 这时候内核才能把数据包交给驱动
 			netif_carrier_on(netdev);
-			//vf相关
+
 			igb_ping_all_vfs(adapter);
 			igb_check_vf_rate_limit(adapter);
 
@@ -5698,13 +5749,12 @@ no_wait:
 				mod_timer(&adapter->phy_info_timer,
 					  round_jiffies(jiffies + 2 * HZ));
 		}
-	} else {//如果之前是up的 现在要变成down
+	} else {
 		if (netif_carrier_ok(netdev)) {
 			adapter->link_speed = 0;
 			adapter->link_duplex = 0;
 
 			/* check for thermal sensor event */
-			//过热导致设备停止 读寄存器
 			if (igb_thermal_sensor_event(hw,
 			    E1000_THSTAT_PWR_DOWN)) {
 				netdev_err(netdev, "The network adapter was stopped because it overheated\n");
@@ -5713,9 +5763,8 @@ no_wait:
 			/* Links status message must follow this format */
 			netdev_info(netdev, "igb: %s NIC Link is Down\n",
 			       netdev->name);
-			//通知协议栈
 			netif_carrier_off(netdev);
-			//通知 VF
+
 			igb_ping_all_vfs(adapter);
 
 			/* link state has changed, schedule phy info update */
@@ -5724,7 +5773,6 @@ no_wait:
 					  round_jiffies(jiffies + 2 * HZ));
 
 			/* link is down, time to check for alternate media */
-			//是否需要在rj45和光纤切换
 			if (adapter->flags & IGB_FLAG_MAS_ENABLE) {
 				igb_check_swap_media(adapter);
 				if (adapter->flags & IGB_FLAG_MEDIA_RESET) {
@@ -5737,9 +5785,7 @@ no_wait:
 					    MSEC_PER_SEC * 5);
 
 		/* also check for alternate media here */
-		//本来就是down的
 		} else if (!netif_carrier_ok(netdev) &&
-		//也尝试切换介质
 			   (adapter->flags & IGB_FLAG_MAS_ENABLE)) {
 			igb_check_swap_media(adapter);
 			if (adapter->flags & IGB_FLAG_MEDIA_RESET) {
@@ -5749,14 +5795,13 @@ no_wait:
 			}
 		}
 	}
-	//更新ifconfig看到的统计信息
+
 	spin_lock(&adapter->stats64_lock);
 	igb_update_stats(adapter);
 	spin_unlock(&adapter->stats64_lock);
 
 	for (i = 0; i < adapter->num_tx_queues; i++) {
 		struct igb_ring *tx_ring = adapter->tx_ring[i];
-		//如果link down了 但是tx队列还有未完成的描述符，需要复位
 		if (!netif_carrier_ok(netdev)) {
 			/* We've lost link, so the controller stops DMA,
 			 * but we've got queued Tx work that's never going
@@ -5772,12 +5817,10 @@ no_wait:
 		}
 
 		/* Force detection of hung controller every watchdog period */
-		//设置检查tx hang住的标志
 		set_bit(IGB_RING_FLAG_TX_DETECT_HANG, &tx_ring->flags);
 	}
 
 	/* Cause software interrupt to ensure Rx ring is cleaned */
-	//主动触发软中断， 清rx描述符
 	if (adapter->flags & IGB_FLAG_HAS_MSIX) {
 		u32 eics = 0;
 
@@ -5787,7 +5830,7 @@ no_wait:
 	} else {
 		wr32(E1000_ICS, E1000_ICS_RXDMT0);
 	}
-	//VF spoof check
+
 	igb_spoof_check(adapter);
 	igb_ptp_rx_hang(adapter);
 	igb_ptp_tx_hang(adapter);
@@ -5798,7 +5841,6 @@ no_wait:
 		igb_check_lvmmc(adapter);
 
 	/* Reset the timer */
-	//重新启动定时器
 	if (!test_bit(__IGB_DOWN, &adapter->state)) {
 		if (adapter->flags & IGB_FLAG_NEED_LINK_UPDATE)
 			mod_timer(&adapter->watchdog_timer,
@@ -9376,10 +9418,11 @@ static int igb_vlan_rx_kill_vid(struct net_device *netdev,
 static void igb_restore_vlan(struct igb_adapter *adapter)
 {
 	u16 vid = 1;
-
+	//根据 netdev->features 配置 VLAN offload 模式
 	igb_vlan_mode(adapter->netdev, adapter->netdev->features);
+	//添加 VLAN 0 ，用于帧处理没有真正进入某个 VLAN，但携带了优先级信息
 	igb_vlan_rx_add_vid(adapter->netdev, htons(ETH_P_8021Q), 0);
-
+	//vlan id 重写vfta表
 	for_each_set_bit_from(vid, adapter->active_vlans, VLAN_N_VID)
 		igb_vlan_rx_add_vid(adapter->netdev, htons(ETH_P_8021Q), vid);
 }

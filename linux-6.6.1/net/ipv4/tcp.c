@@ -4585,7 +4585,7 @@ EXPORT_SYMBOL(tcp_inbound_md5_hash);
 
 #endif
 
-void _rcvtcp_done(struct sock *sk)
+void tcp_done(struct sock *sk)
 {
 	struct request_sock *req;
 

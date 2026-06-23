@@ -509,34 +509,38 @@ void netif_tx_unlock(struct net_device *dev)
 }
 EXPORT_SYMBOL(netif_tx_unlock);
 
+// 注意 只有驱动注册了 tx time out回调才会启动这个定时器
 static void dev_watchdog(struct timer_list *t)
 {
 	struct net_device *dev = from_timer(dev, t, watchdog_timer);
 	bool release = true;
 
 	spin_lock(&dev->tx_global_lock);
+	//如果qdis 是noop就不检查了
 	if (!qdisc_tx_is_noop(dev)) {
+		//设备必须逻辑和链路up
 		if (netif_device_present(dev) &&
 		    netif_running(dev) &&
 		    netif_carrier_ok(dev)) {
 			unsigned int timedout_ms = 0;
 			unsigned int i;
 			unsigned long trans_start;
-
+			//遍历所有TX队列
 			for (i = 0; i < dev->num_tx_queues; i++) {
 				struct netdev_queue *txq;
-
+				//拿到txq
 				txq = netdev_get_tx_queue(dev, i);
-				trans_start = READ_ONCE(txq->trans_start);
-				if (netif_xmit_stopped(txq) &&
+				trans_start = READ_ONCE(txq->trans_start); //netdev_start_xmit中会设置法宝时间戳
+				if (netif_xmit_stopped(txq) &&   //驱动置位过 ，并且超过了驱动注册的超时时间 igb是5s
 				    time_after(jiffies, (trans_start +
 							 dev->watchdog_timeo))) {
+					//更新统计信息
 					timedout_ms = jiffies_to_msecs(jiffies - trans_start);
 					atomic_long_inc(&txq->trans_timeout);
 					break;
 				}
 			}
-
+			//打印日志，调用驱动注册的txtimeout回调
 			if (unlikely(timedout_ms)) {
 				trace_net_dev_xmit_timeout(dev, i);
 				WARN_ONCE(1, "NETDEV WATCHDOG: %s (%s): transmit queue %u timed out %u ms\n",
@@ -545,6 +549,7 @@ static void dev_watchdog(struct timer_list *t)
 				dev->netdev_ops->ndo_tx_timeout(dev, i);
 				netif_unfreeze_queues(dev);
 			}
+			//重新挂上看门狗定时器
 			if (!mod_timer(&dev->watchdog_timer,
 				       round_jiffies(jiffies +
 						     dev->watchdog_timeo)))
@@ -591,11 +596,14 @@ static void dev_watchdog_down(struct net_device *dev)
  */
 void netif_carrier_on(struct net_device *dev)
 {
+	//表示link up了 清掉bit
 	if (test_and_clear_bit(__LINK_STATE_NOCARRIER, &dev->state)) {
-		if (dev->reg_state == NETREG_UNINITIALIZED)
+		if (dev->reg_state == NETREG_UNINITIALIZED) //设备还没注册完成，直接返回
 			return;
-		atomic_inc(&dev->carrier_up_count);
+		atomic_inc(&dev->carrier_up_count);//增加 up的计数 通过sys目录可以看到
+		//调度linkwatch事件
 		linkwatch_fire_event(dev);
+		//启动tx 的看门狗
 		if (netif_running(dev))
 			__netdev_watchdog_up(dev);
 	}
@@ -1244,7 +1252,7 @@ static void transition_one_qdisc(struct net_device *dev,
 				 struct netdev_queue *dev_queue,
 				 void *_need_watchdog)
 {
-	//取出、挂在 qdisc_sleeping 里的 qdisc 这里大概率不是noop了
+	//取出、挂在 qdisc_sleeping 里的 qdisc 这里不是noop了
 	struct Qdisc *new_qdisc = rtnl_dereference(dev_queue->qdisc_sleeping);
 	int *need_watchdog_p = _need_watchdog;
 	//这里设置成了激活状态
